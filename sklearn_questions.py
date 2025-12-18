@@ -57,10 +57,8 @@ from sklearn.base import ClassifierMixin
 from sklearn.model_selection import BaseCrossValidator
 
 from sklearn.utils.validation import check_is_fitted
-from sklearn.utils.validation import validate_data
 from sklearn.metrics.pairwise import pairwise_distances
 from sklearn.utils.multiclass import unique_labels
-from scipy.stats import mode
 
 
 class KNearestNeighbors(ClassifierMixin, BaseEstimator):
@@ -84,7 +82,7 @@ class KNearestNeighbors(ClassifierMixin, BaseEstimator):
         self : instance of KNearestNeighbors
             The current instance of the classifier
         """
-        X, y = validate_data(self, X, y)
+        X, y = self.validate_data(X, y)
         self.classes_ = unique_labels(y)
         self.X_ = X
         self.y_ = y
@@ -104,15 +102,23 @@ class KNearestNeighbors(ClassifierMixin, BaseEstimator):
             Predicted class labels for each test data sample.
         """
         check_is_fitted(self)
-        X = validate_data(self, X, reset=False)
+        X = self.validate_data(X, reset=False)
 
         dist = pairwise_distances(X, self.X_)
         neigh_ind = np.argsort(dist, axis=1)[:, :self.n_neighbors]
         neigh_labels = self.y_[neigh_ind]
 
-        # mode returns (values, counts), we want values
-        y_pred = mode(neigh_labels, axis=1)[0]
-        return y_pred.ravel()
+        y_pred = np.empty(X.shape[0], dtype=self.y_.dtype)
+
+        for i in range(X.shape[0]):
+            # Find the most common label.
+            # np.unique returns sorted unique elements.
+            # argmax returns the first index of the maximum count.
+            # This mimics scipy.stats.mode behavior (smallest value on ties).
+            unique, counts = np.unique(neigh_labels[i], return_counts=True)
+            y_pred[i] = unique[np.argmax(counts)]
+
+        return y_pred
 
     def score(self, X, y):
         """Calculate the score of the prediction.
@@ -129,7 +135,7 @@ class KNearestNeighbors(ClassifierMixin, BaseEstimator):
         score : float
             Accuracy of the model computed for the (X, y) pairs.
         """
-        X, y = validate_data(self, X, y, reset=False)
+        X, y = self.validate_data(X, y, reset=False)
         return np.mean(self.predict(X) == y)
 
 
@@ -178,8 +184,12 @@ class MonthlySplit(BaseCrossValidator):
         if not pd.api.types.is_datetime64_any_dtype(dates):
             raise ValueError("Column must be datetime.")
 
-        months = dates.to_period('M').unique()
-        return max(0, len(months) - 1)
+        if self.time_col == 'index':
+            unique_months = dates.to_period('M').unique()
+        else:
+            unique_months = dates.dt.to_period('M').unique()
+
+        return max(0, len(unique_months) - 1)
 
     def split(self, X, y=None, groups=None):
         """Generate indices to split data into training and test set.
@@ -209,14 +219,18 @@ class MonthlySplit(BaseCrossValidator):
         if not pd.api.types.is_datetime64_any_dtype(dates):
             raise ValueError("Column must be datetime.")
 
-        months = sorted(dates.to_period('M').unique())
+        if self.time_col == 'index':
+            periods = dates.to_period('M')
+        else:
+            periods = dates.dt.to_period('M')
+
+        months = sorted(periods.unique())
         n_splits = self.get_n_splits(X, y, groups)
-        
-        # Use simple integer indexing for the yield
+
         indices = np.arange(X.shape[0])
 
         for i in range(n_splits):
-            train_mask = (dates.to_period('M') == months[i])
-            test_mask = (dates.to_period('M') == months[i+1])
-            
+            train_mask = (periods == months[i])
+            test_mask = (periods == months[i + 1])
+
             yield indices[train_mask], indices[test_mask]
